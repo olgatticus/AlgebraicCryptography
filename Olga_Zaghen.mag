@@ -1,0 +1,344 @@
+/* BUNNYTN : IMPLEMENTATION OF THE CIPHER AND SQUARE ATTACK */
+
+/* Original code by Blastoise Team, modified/improved by Olga Zaghen */
+
+
+
+
+//Definition of global variables: F64 is the BunnyTN field, MAT is the matrix used in the Mixing Layer and InvMAT is its inverse: the matrix used in the inverse Mixing Layer (during the decryption). 
+Z := Integers();
+Q<x>:=PolynomialRing(GF(2));
+f:=x^6+x^4+x^3+x+1;
+F64<e>:=ext<GF(2)|f>;
+MAT := Matrix(F64, 4, 4, [e^45, e^61, e^23, e^29, e^25, e^44, e^54, e^59, e^56, e^5, e^18, e^8, e^55, e^17, e^23, e^16]); 
+InvMAT := Matrix(F64, 4, 4, [e^46, e^56, e^53, e^31, e^35, e^48, e^38, e^29, e^20, e^18, e^11, e^58, e^50, e^47, e^25, e^12]);
+
+
+/*I decided to delete both the function Sbox and MixingLayer, because they only performed one operation which can be easily done in the BunnyTN function itself. The fact that only one operation was performed made it useless to invoke an external function: it only caused waste of time and memory space. This change implies that the computation of the S-box and the Mixing Layer are performed directly, with no additional functions.*/
+
+
+/* KEY SCHEDULE */
+
+
+//KeySchedule is a procedure that accepts the following inputs:
+//k: an integer 0<= k < 2^24 which corresponds to the master key;
+//K: an (empty) sequence of vectors over the BunnyTN field, which is modified and will contain the round keys at the end of the procedure;
+//r: an integer which is the number of rounds.
+
+procedure KeySchedule(k, ~K, r)
+
+   //k1 := the master key expressed as a sequence of bits.
+   k1 := Intseq(k, 2, 24);
+
+   //k2 := k1 expressed as a vector of four elements in the BunnyTN field.
+   k2 := [F64!k1[1..6], F64!k1[7..12], F64!k1[13..18], F64!k1[19..24]];
+
+   //Since we already know the value of cost as a sequence of bits, we can previously compute its value in F64 and directly define it like that, instead of having to perform casts every time KeySchedule is used.
+   cost := e^40;
+
+   //Creation of the words: index 1 of this implementation coincides with -7 of the paper --- W[i+8] = W_(i).
+   W :=[k2[1], k2[2], k2[3], k2[4], k2[1]^62 + k2[2], k2[2]^5 + k2[3], k2[3]^17 + k2[4], k2[4]^62 + e^2 + k2[1]];
+   
+   for i in [1+8..20*(1+ Floor(r/5))+8] do 
+      if 1 eq (i mod 8) then
+         W[i] := W[i-8] + cost + (F64!Rotate(Eltseq(W[i-1]), -1))^5;
+      elif 5 eq (i mod 8) then
+         W[i] := W[i-8] + (W[i-1])^17;
+      else 
+         W[i] := W[i-8] + W[i-1];
+      end if;
+   end for;
+
+   //Computation of the round keys.
+   for i in [0..r] do
+      t := 20*Floor(i/5) + (i mod 5); 
+      K[i+1] := Vector([W[t+9], W[t+14], W[t+19], W[t+24]]);
+   end for;
+end procedure;
+
+
+
+/*  BUNNYTN : THE CIPHER */
+
+
+//BunnyTN is a function which implements the BunnyTN cipher and accepts the following inputs:
+//k: an integer 0<= k < 2^24, it's the master key;
+//m: is an integer 0<= k < 2^24, it's the plaintext;
+//OPTIONAL PARAMETERS:
+//r: an integer, the number of rounds (the default is 15)
+//K: a sequence of vectors over the BunnyTN field which are the round keys. If this sequence is empty (the default) it will be computed using the procedure KeySchedule.
+//inv: a boolean value that says if we want to invert the function (i.e. decrypting instead of encrypting), the default is false.
+//hex: a boolean value that says if we want the output expressed as a string with the hexadecimal representation instead of an integer, the default is false.
+
+function BunnyTN(k, m : r:=15, K:=[], inv:=false, hex:=false)
+
+   //We compute the round keys through the procedure KeySchedule, if they're not already given.
+   if K eq [] then
+      KeySchedule(k, ~K, r);
+   end if;
+
+
+   //We redefine the plaintext as a vector of four elements in the BunnyTN field.
+   P := Intseq(m, 2, 24);
+   P := Vector([F64!P[1..6], F64!P[7..12], F64!P[13..18], F64!P[19..24]]);
+
+   //If the variable inv is false, the encryption is performed.
+   if inv eq false then
+
+      //Initial whitening.
+      C := K[1] + P; 
+
+      //r rounds all composed by: application of an S-Box, Mixing Layer and sum with the round key.
+      for i in [1..r] do
+         C := Vector([C[1]^62, C[2]^5, C[3]^17, C[4]^62 + e^2]); 
+         C := C*MAT; 
+         C := K[i+1] + C; 
+      end for;
+
+   else
+
+   //If the variable inv is true, the decryption is performed.
+
+      //Whitening (sum with the last round's key).
+      C := K[r+1] + P; 
+
+      //r rounds all composed by: application of the inverse Mixing Layer, inverse S-Box and sum with the round key.
+      for i in [1..r] do
+         C := C*InvMAT;
+         C := Vector([C[1]^62, C[2]^38, C[3]^26, (C[4]+e^2)^62]);
+         C := K[r+1-i] + C; 
+      end for;
+   end if;
+
+
+   //c is the obtained ciphertext: it is an integer if hex is false, a string of hexadecimal digits (i.e. characters 0-9, A-F) if hex is true.
+   c := Seqint([Z!s : s in Eltseq(C[i]), i in [1..4]], 2);
+   if hex eq true then
+      c := IntegerToString(c, 16);
+   end if;
+   return c;
+end function;
+
+
+
+
+
+/*  SQUARE  ATTACK  */
+
+
+//Definition of the master key of which the third round key will be attacked.
+
+K := 0xeeb7dd;
+K_session := [];
+
+//W is a global variable used in both FirstSingleSquareAttack and SingleSquareAttack; it is not defined in the functions in order not to perform all the conversions from F64 to sequence of bits and from bits to integers every time FirstSingleSquareAttack and SingleSquareAttack are invoked, which would be a waste of time. 
+W := {[Z!b : b in Eltseq(a)] : a in F64};
+
+//Computation of the key schedule of K for three rounds: we will always use this during the executions of BunnyTN for the attack.
+KeySchedule(K, ~K_session, 3);
+
+
+//BunnyTN_BlackBox is a function that executes BunnyTN of three rounds, its only input is the plaintext used for the BunnyTN function.
+//The BunnyTN function uses the master key defined above, as well as its already computed key schedule K_session.
+function BunnyTN_BlackBox(P)
+
+   C := BunnyTN(K, P : r:=3, K := K_session);
+
+   return C;
+
+end function;
+
+
+
+//FirstSingleSquareAttack is a function that performs the attack with an initial set of plaintexts composed by an active brick and three constant bricks. It has the following inputs:
+//c := the constant value of the bricks of the initial plaintexts.
+//output:
+//K_prob := a sequence of four sets: in the i-th set the possible i-th bricks of K3' (the third round key on which the Inverse Mixing Layer is applied, to which I also referred to as pseudokey) are contained, for this value of the constant c.
+function FirstSingleSquareAttack(c)
+
+   K_prob := [{F64|}, {F64|}, {F64|}, {F64|}];
+
+
+   //Creation of the ciphertexts, performed using the BunnyTN_BlackBox function.
+   C := [];
+   cont := 1;
+   B := [Z!d : d in Eltseq(c)]; 
+   for A in W do
+      C[cont] := BunnyTN_BlackBox(Seqint(A cat B cat B cat B, 2));
+      cont := cont+1;
+   end for;
+   
+
+   /* Partial decryption of the ciphertext through the third round, in order to verify for which values of the bricks of K3' the message satisfies the property of sum zero at the beginning of the third round. */
+
+   //Ever is a sequence that contains the result obtained by applying Inverse Mixing Layer to the ciphertexts previously computed.
+   Ever := [(Vector([F64!(Intseq(C[l],2,24)[j..j+5]):j in [1..24 by 6]]))*InvMAT : l in [1..64]];
+
+   
+   //We perform the sum with the possible bricks of K3' and then the Inverse S-Box, and sum zero property is checked.
+   for i in [1..4] do
+      for key in F64 do
+
+         //v contains the partial sum of the bricks in Ever on which partial decryption is performed.
+         v := F64!0;
+
+         //First a bitwise xor is computed, and then according to the value of i (the index of the brick) the specific inverse S-Box operation is performed.
+
+         case i:
+            when 1:
+            for l in [1..64] do
+               v := (key + Ever[l][i])^62 + v;
+            end for;
+            when 2:
+            for l in [1..64] do
+               v := (key + Ever[l][i])^38 + v;
+            end for;
+            when 3:
+            for l in [1..64] do
+               v := (key + Ever[l][i])^26 + v;
+            end for;
+            when 4:
+            for l in [1..64] do
+               v := (key + Ever[l][i] + e^2)^62 + v;
+            end for;
+         end case;
+
+         //Sum zero property is checked.
+         if v eq F64!0 then
+            Include(~K_prob[i],key);
+         end if; 
+      end for;
+   end for;
+   
+   return K_prob;
+end function;
+
+
+
+//SingleSquareAttack is a procedure that performs the attack with an initial set of plaintexts composed by an active brick and three constant bricks. The possible bricks for K3' with which it operates are the ones previously computed and stored in K_prob.
+// It has the following inputs:
+//c := the constant value of the bricks of the initial plaintexts.
+//K_prob := a sequence of four sets: in the i-th set the possible i-th bricks of K3' are contained.
+procedure SingleSquareAttack(c, ~K_prob)
+
+   //Creation of the ciphertexts, performed using the BunnyTN_BlackBox function.
+   C := [];
+   cont := 1;
+   B := [Z!d : d in Eltseq(c)]; 
+   for A in W do
+      C[cont] := BunnyTN_BlackBox(Seqint(A cat B cat B cat B, 2));
+      cont := cont+1;
+   end for;
+   
+
+   /* Partial decryption of the ciphertext through the third round, in order to verify for which values of the bricks of K3' the message satisfies the property of sum zero at the beginning of the third round. */
+
+   //Ever is a sequence that contains the result obtained by applying Inverse Mixing Layer to the ciphertexts previously computed.
+   Ever := [(Vector([F64!(Intseq(C[l],2,24)[j..j+5]):j in [1..24 by 6]]))*InvMAT : l in [1..64]];
+
+   
+   //We perform the sum with the possible bricks of K3' and then the Inverse S-Box, and sum zero property is checked.
+   for i in [1..4] do
+     if #K_prob[i] gt 1 then
+      for key in K_prob[i] do
+
+         //v contains the partial sum of the bricks in Ever on which partial decryption is performed.
+         v := F64!0;
+
+
+         //First a bitwise xor is computed, and then according to the value of i (the index of the brick) the specific inverse S-Box operation is performed.
+         case i:
+            when 1:
+            for l in [1..64] do
+               v := (key + Ever[l][i])^62 + v;
+            end for;
+            when 2:
+            for l in [1..64] do
+               v := (key + Ever[l][i])^38 + v;
+            end for;
+            when 3:
+            for l in [1..64] do
+               v := (key + Ever[l][i])^26 + v;
+            end for;
+            when 4:
+            for l in [1..64] do
+               v := (key + Ever[l][i] + e^2)^62 + v;
+            end for;
+         end case;
+
+         //Sum zero property is checked.
+         if v ne F64!0 then
+            Exclude(~K_prob[i],key);
+         end if; 
+      end for;
+    end if;
+   end for;
+   
+end procedure;
+
+
+//Square_BunnyTN is a function that aims to recover the third round key (K3) derived from the master key K fixed above as a global variable. This is done performing the Square Attack.
+//Square_BunnyTN doesn't accept any input and its output is the key K3 as an integer of 6 digits in hexadecimal notation.
+function Square_BunnyTN()
+
+   //K_prob is a sequence of four sets: in the i-th set the possible i-th bricks of K3' are contained.
+   K_prob := FirstSingleSquareAttack(0); 
+
+
+   //If we have more than one possibility for at least one brick of K3', we perform SingleSquareAttack until every brick is uniquely determined.
+
+   if (#K_prob[1] gt 1) or (#K_prob[2] gt 1) or (#K_prob[3] gt 1) or (#K_prob[4] gt 1) then 
+     //Sequence of some constants in F64 used to construct the initial plaintexts for every SingleSquareAttack. 
+     cost := [1*e^0, e, e^2, e^3, e^4, e + e^2, e^5];
+     i := 1;
+   end if;
+
+   while (#K_prob[1] gt 1) or (#K_prob[2] gt 1) or (#K_prob[3] gt 1) or (#K_prob[4] gt 1)  do
+      SingleSquareAttack(cost[i], ~K_prob); 
+      i := i + 1;
+   end while;
+
+   //From the computation performed we obtain K3' : we derive K3 by applying the operation of Mixing Layer.
+   key_long := Vector([Max(K_prob[i]): i in [1..4]])*MAT;
+   n := Seqint([Z!s : s in Eltseq(key_long[i]), i in [1..4]], 2);
+
+   return n; 
+end function;
+
+
+
+
+/*  CAN WE EXTEND THE ATTACK TO MORE THAN THREE ROUNDS?   */
+
+
+
+//We prove that the property of sum 0 is satisfied only at at the end of the second round and not at the end of the third: this implies that the attack seen above can't be extended in the same fashion to the fourth round of the cipher, as it is done with AES.
+
+   C := [];
+   cont := 1;
+   for a in F64 do
+      A := [Z!b : b in Eltseq(a)]; 
+      C[cont] := BunnyTN(K, Seqint(A cat [0 : i in [1..18]], 2) : r := 2);
+      cont := cont+1;
+   end for;
+   C1 := [Vector(F64, Intseq(C[i], 2, 24)) : i in [1..#C]];
+   // &+C1 is the 0 vector.
+
+   C := [];
+   cont := 1;
+   for a in F64 do
+      A := [Z!b : b in Eltseq(a)]; 
+      C[cont] := BunnyTN(K, Seqint(A cat [0 : i in [1..18]], 2) : r := 3);
+      cont := cont+1;
+   end for;
+   C1 := [Vector(F64, Intseq(C[i], 2, 24)) : i in [1..#C]];
+  // &+C1 is not the 0 vector.
+
+
+//Furthermore, we observed that the matrix MAT used in the Mixing Layer guarantees high diffusion, hence the extended Square Attack and the Partial Sum Attack, that can easily be performed on AES, cannot be used to attack the BunnyTN cipher in a less expensive way than a brute force attack on the master key.
+
+
+
+
+
+
